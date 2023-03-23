@@ -1,0 +1,805 @@
+---
+title: "Obesogen_R21_account_for_daysvariance_Mixed_effect_models_tissue"
+author: "Meizhen Yao"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: united
+    highlight: tango
+    df_print: paged
+    fig_caption: yes
+    fig_height: 7
+    fig_width: 10
+    number_sections: yes
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+    self_contained: yes
+    code_folding: hide
+    toc_depth: 6
+  editor_options: 
+    chunk_output_type: console
+header-includes: \usepackage{multirow}
+---
+
+<style type="text/css">
+body{
+  /*font-family: Helvetica;*/
+  font-size: 12pt;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+options(digits = 4)
+knitr::opts_chunk$set(echo = TRUE,tidy=TRUE,cache=F,warning = FALSE)
+# suppress warning messages for final rendering
+old.warn <- getOption("warn")
+options(qwraps2_markup = "markdown")
+
+```
+
+
+```{r, include = FALSE}
+
+library(openxlsx)
+library("data.table") 
+library(readxl)
+library(writexl)
+library(broom)
+library(gtsummary)
+library(gt)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggpubr)
+library(boot)
+library(flextable)
+library(plyr)
+library(Rcpp)
+library(gWQS)
+library(broom.mixed)
+library(officer)
+library(scales)
+library(spatstat)
+library(devtools)
+# install_version("optmatch", version = "0.9.17", repos = "http://cran.us.r-project.org")
+# install_github("markmfredrickson/RItools")
+library(RItools)
+library(optmatch)
+library(mice)
+library(lme4)
+#------------------------------------------Import data sets (combine to one)
+whole<- read_excel("~/Projects/Emory R21 Study/output/Nate/obesogen_R21_metadata_total_nate_wide_03092022.xlsx")
+
+#------------------------------------------only keep subjects who have two timepoint visit & baseline chemical data
+tissue<- whole %>% 
+         select(-matches("plasma")) %>% 
+         filter(tissue_ind==1 & both_ind==2)
+
+tissue_long<- tissue %>% 
+              pivot_longer(
+               cols = height_m.Baseline:LDL_mgdl.6month,
+               names_to =  c(".value", "visit"),
+               names_sep = "\\.") 
+
+## covariates & chemicals
+tissue_long$visit <- factor(tissue_long$visit, 
+                                 levels = c("Baseline", "6month"))
+
+tissue_long$smoking_history <- factor(tissue_long$smoking_history,
+                                           levels = c(0, 1),
+                                           labels = c("No", "Yes"))
+
+tissue_long$Sex <- factor(tissue_long$Sex,
+                               levels = c(0, 1),
+                               labels = c("Male", "Female"))
+
+tissue_long$Ethnicity <- factor(tissue_long$Ethnicity,
+                                     levels=c(0, 1),
+                                     labels=c("Non-hispanic", "Hispanic"))
+
+tissue_long$Race <- factor(tissue_long$Race,
+                                     levels=c(0, 1, 2, 3),
+                                     labels=c("White", "African American", "Asian", "American Indian or Alaskan Native"))
+
+tissue_long<- tissue_long %>% 
+                   mutate(Age_Baseline_monthly = Age/12,
+                          Age_basesurg_monthly = -days_to_surgery/30,
+                          Age_surg2_monthly = days_to_visit2/30, # convert age to monthly change
+                          Age_visit2_monthly = Age_Baseline_monthly + Age_surg2_monthly,
+                          Age_Baseline_monthly_center = Age_Baseline_monthly - mean(Age_Baseline_monthly), 
+                          Age_cumu_c= ifelse(visit=="Baseline", Age_basesurg_monthly,  Age_surg2_monthly),
+                          dde_4_4_tissue.VAT=(dde_4_4_tissue.VAT - mean(dde_4_4_tissue.VAT))/sd(dde_4_4_tissue.VAT),
+                          pcb_118_tissue.VAT=(pcb_118_tissue.VAT - mean(pcb_118_tissue.VAT))/sd(pcb_118_tissue.VAT),
+                          pcb_153_tissue.VAT=(pcb_153_tissue.VAT - mean(pcb_153_tissue.VAT))/sd(pcb_153_tissue.VAT),
+                          ddt_4_4_tissue.VAT=(ddt_4_4_tissue.VAT - mean(ddt_4_4_tissue.VAT))/sd(ddt_4_4_tissue.VAT),
+                          pbde_47_tissue.VAT=(pbde_47_tissue.VAT - mean(pbde_47_tissue.VAT))/sd(pbde_47_tissue.VAT),
+                          dde_4_4_tissue.SAT=(dde_4_4_tissue.SAT - mean(dde_4_4_tissue.SAT))/sd(dde_4_4_tissue.SAT),
+                          pcb_118_tissue.SAT=(pcb_118_tissue.SAT - mean(pcb_118_tissue.SAT))/sd(pcb_118_tissue.SAT),
+                          pcb_153_tissue.SAT=(pcb_153_tissue.SAT - mean(pcb_153_tissue.SAT))/sd(pcb_153_tissue.SAT),
+                          ddt_4_4_tissue.SAT=(ddt_4_4_tissue.SAT - mean(ddt_4_4_tissue.SAT))/sd(ddt_4_4_tissue.SAT),
+                          pbde_47_tissue.SAT=(pbde_47_tissue.SAT - mean(pbde_47_tissue.SAT))/sd(pbde_47_tissue.SAT)) # calculate time-varing age
+
+#------------------------------------------ checking missing
+sapply(tissue_long, function(x) sum(is.na(x)))
+
+
+#------------------------------------------ create data and vector for outcomes
+outcomes_data<- tissue_long[, c("Weight_kg", "bmi", "reg_pfat",
+             "tot_lean_kg", "tot_fat_kg",
+             "tot_lean_index", "tot_fat_index",
+             "vis_fat_mass_kg", "glucose", 
+             "insulin", "Baseline_HOMA_IR_NEW", 
+             "AIRg", "DI", "SI", "Chol_mgdl", 
+             "TG_mgdl", "HDL_mgdl", "LDL_mgdl")]
+
+outcome_variable<- c("Weight_kg", "bmi", "reg_pfat",
+             "tot_lean_kg", "tot_fat_kg",
+             "tot_lean_index", "tot_fat_index",
+             "vis_fat_mass_kg", "glucose", 
+             "insulin", "Baseline_HOMA_IR_NEW", 
+             "AIRg", "DI", "SI", "Chol_mgdl", 
+             "TG_mgdl", "HDL_mgdl", "LDL_mgdl")
+
+```
+
+Tissue: metabolic outcomes measured at two time-points, but there are large variance of days between surgery and second visit among subjects
+
+# VAT
+## 4,4'-DDE
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ dde_4_4_tissue.VAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "dde_4_4_tissue.VAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "dde_4_4") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/dde_4_4_vat.xlsx")
+```
+
+## PCB-118
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ pcb_118_tissue.VAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# 
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_118_tissue.VAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_118") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_118_vat.xlsx")
+```
+
+## PCB-153
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ pcb_153_tissue.VAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_153_tissue.VAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_153") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_153_vat.xlsx")
+```
+
+
+## 4,4'-DDT
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ ddt_4_4_tissue.VAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "ddt_4_4_tissue.VAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "ddt_4_4") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/ddt_4_4_vat.xlsx")
+```
+
+
+## 2,3,7,8-TCDD
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ pbde_47_tissue.VAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+# 
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pbde_47_tissue.VAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "pbde_47") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pbde_47_vat.xlsx")
+```
+
+
+## Combine output
+```{r, include=FALSE}
+
+dde_4_4_vat<- read_excel("~/Projects/Emory R21 Study/output/plot/dde_4_4_vat.xlsx")
+pcb_118_vat<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_118_vat.xlsx")
+pcb_153_vat<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_153_vat.xlsx")
+ddt_4_4_vat<- read_excel("~/Projects/Emory R21 Study/output/plot/ddt_4_4_vat.xlsx")
+pbde_47_vat<- read_excel("~/Projects/Emory R21 Study/output/plot/pbde_47_vat.xlsx")
+
+mixed_effect_plot_vat<- rbind(dde_4_4_vat,
+                          pcb_118_vat,
+                          pcb_153_vat,
+                          ddt_4_4_vat,
+                          pbde_47_vat)
+
+
+write_xlsx(mixed_effect_plot_vat, "~/Projects/Emory R21 Study/output/plot/mixed_effect_plot_vat.xlsx")
+
+```
+
+
+
+# SAT
+## 4,4'-DDE
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ dde_4_4_tissue.SAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+# 
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "dde_4_4_tissue.SAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "dde_4_4") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/dde_4_4_sat.xlsx")
+```
+
+## PCB-118
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ pcb_118_tissue.SAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# 
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_118_tissue.SAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_118") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_118_sat.xlsx")
+```
+
+## PCB-153
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ pcb_153_tissue.SAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+# 
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_153_tissue.SAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_153") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_153_sat.xlsx")
+```
+
+
+## 4,4'-DDT
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ ddt_4_4_tissue.SAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "ddt_4_4_tissue.SAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "ddt_4_4") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/ddt_4_4_sat.xlsx")
+```
+
+
+## 2,3,7,8-TCDD
+```{r, warning=FALSE, message=FALSE}
+
+## Fit the models
+    tissue_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    tissue_long_nomiss[[i]]<- tissue_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype + Race + smoking_history+ pbde_47_tissue.SAT*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = tissue_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(tissue_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pbde_47_tissue.SAT:Age_cumu_c")%>%
+#                                      mutate(exposure = "pbde_47") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pbde_47_sat.xlsx")
+```
+
+
+## Combine output
+```{r, include=FALSE}
+
+dde_4_4_sat<- read_excel("~/Projects/Emory R21 Study/output/plot/dde_4_4_sat.xlsx")
+pcb_118_sat<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_118_sat.xlsx")
+pcb_153_sat<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_153_sat.xlsx")
+ddt_4_4_sat<- read_excel("~/Projects/Emory R21 Study/output/plot/ddt_4_4_sat.xlsx")
+pbde_47_sat<- read_excel("~/Projects/Emory R21 Study/output/plot/pbde_47_sat.xlsx")
+
+mixed_effect_plot_sat<- rbind(dde_4_4_sat,
+                          pcb_118_sat,
+                          pcb_153_sat,
+                          ddt_4_4_sat,
+                          pbde_47_sat)
+
+
+write_xlsx(mixed_effect_plot_sat, "~/Projects/Emory R21 Study/output/plot/mixed_effect_plot_sat.xlsx")
+
+```
+
+
+
+

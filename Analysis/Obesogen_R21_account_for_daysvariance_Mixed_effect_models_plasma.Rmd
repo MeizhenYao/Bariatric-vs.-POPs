@@ -1,0 +1,544 @@
+---
+title: "Obesogen R21 account for daysvariance Mixed effect models in plasma"
+author: "Meizhen Yao"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: united
+    highlight: tango
+    df_print: paged
+    fig_caption: yes
+    fig_height: 7
+    fig_width: 10
+    number_sections: yes
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+    self_contained: yes
+    code_folding: hide
+    toc_depth: 6
+  editor_options: 
+    chunk_output_type: console
+header-includes: \usepackage{multirow}
+---
+
+<style type="text/css">
+body{
+  /*font-family: Helvetica;*/
+  font-size: 12pt;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+options(digits = 4)
+knitr::opts_chunk$set(echo = TRUE,tidy=TRUE,cache=F,warning = FALSE)
+# suppress warning messages for final rendering
+old.warn <- getOption("warn")
+options(qwraps2_markup = "markdown")
+
+```
+
+
+```{r, include = FALSE}
+
+library(openxlsx)
+library("data.table") 
+library(readxl)
+library(writexl)
+library(broom)
+library(gtsummary)
+library(gt)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggpubr)
+library(boot)
+library(flextable)
+library(plyr)
+library(Rcpp)
+library(gWQS)
+library(broom.mixed)
+library(officer)
+library(scales)
+library(spatstat)
+library(devtools)
+# install_version("optmatch", version = "0.9.17", repos = "http://cran.us.r-project.org")
+# install_github("markmfredrickson/RItools")
+library(RItools)
+library(optmatch)
+library(mice)
+library(lme4)
+#------------------------------------------Import data sets (combine to one)
+whole<- read_excel("~/Projects/Emory R21 Study/output/Nate/obesogen_R21_metadata_total_nate_wide_03092022.xlsx")
+
+#------------------------------------------only keep subjects who have two timepoint visit & baseline chemical data
+plasma<- whole %>% 
+         select(-matches("VAT") & -matches("SAT")) %>%  
+             filter(both_ind==2 & plasma_ind==1)
+
+plasma_long<- plasma %>% 
+              pivot_longer(
+               cols = height_m.Baseline:LDL_mgdl.6month,
+               names_to =  c(".value", "visit"),
+               names_sep = "\\.")  %>% 
+              select(-ends_with("6month"))
+
+#------------------------------------------ Reformate variables
+
+plasma_long$pcb_153_plasma_Comment.Baseline <- factor(plasma_long$pcb_153_plasma_Comment.Baseline, levels=c(0, 1))
+plasma_long$pcb_138_plasma_Comment.Baseline <- factor(plasma_long$pcb_138_plasma_Comment.Baseline, levels=c(0, 1))
+plasma_long$pcb_118_plasma_Comment.Baseline <- factor(plasma_long$pcb_118_plasma_Comment.Baseline, levels=c(0, 1))
+plasma_long$dde_4_4_plasma_Comment.Baseline <- factor(plasma_long$dde_4_4_plasma_Comment.Baseline, levels=c(0, 1))
+plasma_long$ddt_2_4_plasma_Comment.Baseline <- factor(plasma_long$ddt_2_4_plasma_Comment.Baseline, levels=c(0, 1))
+plasma_long$HCB_plasma_Comment.Baseline <- factor(plasma_long$HCB_plasma_Comment.Baseline, levels=c(0, 1))
+
+
+
+
+## covariates & chemicals
+plasma_long$visit <- factor(plasma_long$visit, 
+                                 levels = c("Baseline", "6month"))
+
+plasma_long$smoking_history <- factor(plasma_long$smoking_history,
+                                           levels = c(0, 1),
+                                           labels = c("No", "Yes"))
+
+plasma_long$Sex <- factor(plasma_long$Sex,
+                               levels = c(0, 1),
+                               labels = c("Male", "Female"))
+
+plasma_long$Ethnicity <- factor(plasma_long$Ethnicity,
+                                     levels=c(0, 1),
+                                     labels=c("Non-hispanic", "Hispanic"))
+
+plasma_long$Race <- factor(plasma_long$Race,
+                                     levels=c(0, 1, 2, 3),
+                                     labels=c("White", "African American", "Asian", "American Indian or Alaskan Native"))
+
+plasma_long<- plasma_long %>% 
+                   mutate(Age_Baseline_monthly = Age/12,
+                          Age_basesurg_monthly = -days_to_surgery/30,
+                          Age_surg2_monthly = days_to_visit2/30, # convert age to monthly change
+                          Age_visit2_monthly = Age_Baseline_monthly + Age_surg2_monthly,
+                          Age_Baseline_monthly_center = Age_Baseline_monthly - mean(Age_Baseline_monthly), 
+                          Age_cumu_c= ifelse(visit=="Baseline", Age_basesurg_monthly,  Age_surg2_monthly),
+                          dde_4_4_plasma.Baseline=(dde_4_4_plasma.Baseline - mean(dde_4_4_plasma.Baseline))/sd(dde_4_4_plasma.Baseline),
+                          ddt_2_4_plasma.Baseline=(ddt_2_4_plasma.Baseline - mean(ddt_2_4_plasma.Baseline))/sd(ddt_2_4_plasma.Baseline),
+                          HCB_plasma.Baseline=(HCB_plasma.Baseline - mean(HCB_plasma.Baseline))/sd(HCB_plasma.Baseline)) # calculate time-varing age
+
+#------------------------------------------ checking missing
+sapply(plasma_long, function(x) sum(is.na(x)))
+
+
+#------------------------------------------ create data and vector for outcomes
+outcomes_data<- plasma_long[, c("Weight_kg", "bmi", "reg_pfat",
+             "tot_lean_kg", "tot_fat_kg",
+             "tot_lean_index", "tot_fat_index",
+             "vis_fat_mass_kg", "glucose", 
+             "insulin", "Baseline_HOMA_IR_NEW", 
+             "AIRg", "DI", "SI", "Chol_mgdl", 
+             "TG_mgdl", "HDL_mgdl", "LDL_mgdl")]
+
+outcome_variable<- c("Weight_kg", "bmi", "reg_pfat",
+             "tot_lean_kg", "tot_fat_kg",
+             "tot_lean_index", "tot_fat_index",
+             "vis_fat_mass_kg", "glucose", 
+             "insulin", "Baseline_HOMA_IR_NEW", 
+             "AIRg", "DI", "SI", "Chol_mgdl", 
+             "TG_mgdl", "HDL_mgdl", "LDL_mgdl")
+
+```
+
+Plasma: metabolic outcomes measured at two time-points, but there are large variance of days between surgery and second visit among subjects
+
+# PCB-153
+```{r}
+
+## Fit the models
+    plasma_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    plasma_long_nomiss[[i]]<- plasma_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype +  Race + smoking_history+ pcb_153_plasma_Comment.Baseline*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = plasma_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(plasma_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+# 
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_153_plasma_Comment.Baseline1:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_153") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_153.xlsx")
+```
+
+# PCB-138
+```{r}
+
+## Fit the models
+    plasma_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    plasma_long_nomiss[[i]]<- plasma_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype +  Race + smoking_history+ pcb_138_plasma_Comment.Baseline*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = plasma_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(plasma_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_138_plasma_Comment.Baseline1:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_138") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_138.xlsx")
+```
+
+# PCB-118
+```{r}
+
+## Fit the models
+    plasma_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    plasma_long_nomiss[[i]]<- plasma_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype +  Race + smoking_history+ pcb_118_plasma_Comment.Baseline*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = plasma_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(plasma_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "pcb_118_plasma_Comment.Baseline1:Age_cumu_c")%>%
+#                                      mutate(exposure = "pcb_118") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/pcb_118.xlsx")
+```
+
+
+# 4,4'-DDE
+```{r}
+
+## Fit the models
+    plasma_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    plasma_long_nomiss[[i]]<- plasma_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype +  Race + smoking_history+ dde_4_4_plasma.Baseline*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = plasma_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(plasma_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "dde_4_4_plasma.Baseline:Age_cumu_c")%>%
+#                                      mutate(exposure = "dde_4_4") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/dde_4_4.xlsx")
+```
+
+
+# 2,4'-DDT
+```{r}
+
+## Fit the models
+    plasma_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    plasma_long_nomiss[[i]]<- plasma_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype +  Race + smoking_history+ ddt_2_4_plasma.Baseline*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = plasma_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(plasma_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "ddt_2_4_plasma.Baseline:Age_cumu_c")%>%
+#                                      mutate(exposure = "ddt_2_4") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/ddt_2_4.xlsx")
+```
+
+
+# HCB
+```{r}
+
+## Fit the models
+    plasma_long_nomiss<- list()
+    child_anthro_mixed<- list()
+    number_obs<- vector()
+    for (i in 1:length(outcomes_data)){
+      
+    ### 1. adjust analysis dataset - restricted to subject who have no missing values and both measurements
+    plasma_long_nomiss[[i]]<- plasma_long %>% 
+                          filter(is.na(outcomes_data[,i])==FALSE) %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(count=n()) %>% 
+                          filter(count==2)
+    ## 2. fitting models
+    child_anthro_mixed[[i]]<- lmer(formula = substitute(i ~ surgerytype +  Race + smoking_history+ HCB_plasma.Baseline*Age_cumu_c  + (1|ID), 
+                           list(i = as.name(outcome_variable[i]))),
+         data = plasma_long_nomiss[[i]])
+    
+    ## 3. number of obs
+    number_obs[i]<- nrow(plasma_long_nomiss[[i]])}
+
+
+## extract data from models
+### extract results to a list
+child_anthro_mixed_coefs<- lapply(child_anthro_mixed, tidy, conf.int = T)
+
+### add number of obs
+for (i in 1:length(outcomes_data)){
+  child_anthro_mixed_coefs[[i]]<- child_anthro_mixed_coefs[[i]] %>% 
+                                  mutate(obs=number_obs[i])}
+### add outcome variables
+names(child_anthro_mixed_coefs) <- outcome_variable
+
+### combine results into one dataframe
+child_anthro_mixed_coefs_data1 <- bind_rows(child_anthro_mixed_coefs, .id = "outcome_variable")
+
+### refine results in data
+child_anthro_mixed_coefs_data <- child_anthro_mixed_coefs_data1 %>% 
+                           filter(term != "(Intercept)" & term !=  "surgerytypeSleeve" & term !=  "SexFemale"& term !=  "RaceAfrican American"& term !=  "smoking_historyYes"& term !=  "sd__(Intercept)" & term !=  "sd__Observation") %>% 
+                           mutate(Estimate = round(estimate, 3),
+                                  conf.low = round(conf.low, 3),
+                                  conf.high = round(conf.high, 3)) %>% 
+                           select(outcome_variable,obs, term, estimate,  conf.low, conf.high) 
+
+### put result into one table
+tabel<- flextable(as_grouped_data(child_anthro_mixed_coefs_data, groups = "outcome_variable"))%>% 
+        theme_box()
+tabel
+
+# ## Export data input for plot
+# child_anthro_mixed_coefs_data_plot<- child_anthro_mixed_coefs_data %>%
+#                                      filter(term == "HCB_plasma.Baseline:Age_cumu_c")%>%
+#                                      mutate(exposure = "HCB") %>%
+#                                      select(outcome_variable, exposure, estimate, conf.low, conf.high)
+# 
+# write_xlsx(child_anthro_mixed_coefs_data_plot, "~/Projects/Emory R21 Study/output/plot/HCB.xlsx")
+```
+
+
+```{r, include=FALSE}
+
+HCB<- read_excel("~/Projects/Emory R21 Study/output/plot/HCB.xlsx")
+dde_4_4<- read_excel("~/Projects/Emory R21 Study/output/plot/dde_4_4.xlsx")
+ddt_2_4<- read_excel("~/Projects/Emory R21 Study/output/plot/ddt_2_4.xlsx")
+pcb_118<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_118.xlsx")
+pcb_138<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_138.xlsx")
+pcb_153<- read_excel("~/Projects/Emory R21 Study/output/plot/pcb_153.xlsx")
+
+mixed_effect_plot<- rbind(HCB,
+                          dde_4_4,
+                          ddt_2_4,
+                          pcb_118,
+                          pcb_138,
+                          pcb_153)
+
+
+write_xlsx(mixed_effect_plot, "~/Projects/Emory R21 Study/output/plot/mixed_effect_plot.xlsx")
+
+```
+
+
+

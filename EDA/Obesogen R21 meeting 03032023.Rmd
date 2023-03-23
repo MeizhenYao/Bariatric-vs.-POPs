@@ -1,0 +1,527 @@
+---
+title: "Obesogen R21 meeting 03032023"
+author: "Meizhen Yao"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: united
+    highlight: tango
+    df_print: paged
+    fig_caption: yes
+    fig_height: 7
+    fig_width: 10
+    number_sections: yes
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+    self_contained: yes
+    code_folding: hide
+    toc_depth: 6
+header-includes: \usepackage{multirow}
+---
+
+<style type="text/css">
+body{
+  /*font-family: Helvetica;*/
+  font-size: 12pt;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+options(digits = 4)
+knitr::opts_chunk$set(echo = TRUE,tidy=TRUE,cache=F,warning = FALSE)
+# suppress warning messages for final rendering
+old.warn <- getOption("warn")
+options(qwraps2_markup = "markdown")
+
+```
+
+
+```{r, include = FALSE}
+library(zoo)
+library(openxlsx)
+library("data.table") 
+library(readxl)
+library(writexl)
+library(gapminder)
+library(gganimate)
+library(clubSandwich)
+library(WeightIt)
+library(ResourceSelection)
+library(parameters)
+library(sjstats)
+library(rms)
+library(survminer)
+library(survival)
+library(broom)
+library("data.table")   
+library(gtsummary)
+library(gt)
+library(tidyverse)
+library(ggpubr)
+library(cowplot)
+library(gridExtra)
+library(readxl)
+library(sandwich)
+library(boot)
+library(table1)
+library(flextable)
+library(plyr)
+library(Rcpp)
+library(modelr)
+library(readr)
+library(gWQS)
+library(broom.mixed)
+library(yaml)
+library(rmarkdown)
+library(officer)
+library(scales)
+library(spatstat)
+library(survey)
+library(MatchIt)
+library(devtools)
+library(cobalt)
+# install_version("optmatch", version = "0.9.17", repos = "http://cran.us.r-project.org")
+# install_github("markmfredrickson/RItools")
+library(RItools)
+library(optmatch)
+library(mice)
+#------------------------------------------Import data sets (combine to one)
+R21_other_plasma <- read_excel("~/Projects/Emory R21 study/output/Nate/obesogen_R21_metadata_total_nate_03092022.xlsx", sheet = "Plasma_other")
+
+R21_tissue <- read_excel("~/Projects/Emory R21 study/output/Nate/obesogen_R21_metadata_total_nate_03092022.xlsx", sheet = "Tissue")
+
+whole<- read_excel("~/Projects/Emory R21 Study/output/wide_format/whole_wide.xlsx")
+```
+
+```{r, include = FALSE}
+# data preparation (reformat)
+## R21_other_plasma
+R21_other_plasma$visit<- factor(R21_other_plasma$visit,
+                                levels = c("Baseline", "6 month"))
+R21_other_plasma$Sex<- factor(R21_other_plasma$Sex,
+                              levels = c(0, 1),
+                              labels = c("Male", "Female"))
+R21_other_plasma$Race<- factor(R21_other_plasma$Race,
+                               levels = c(0:3),
+                               labels = c("White", "African American", "Asian", "American Indian / Alaskan Native"))
+R21_other_plasma$Ethnicity<- factor(R21_other_plasma$Ethnicity,
+                              levels = c(0, 1),
+                              labels = c("Non-hispanic", "Hispanic"))
+R21_other_plasma$`100cigarettes`<- factor(R21_other_plasma$`100cigarettes`,
+                              levels = c(0, 1),
+                              labels = c("Less than 100 cigarettes in your entire life", "At least 100 cigarettes in your entire life"))
+
+whole$Sex<- factor(whole$Sex,
+                              levels = c(0, 1),
+                              labels = c("Male", "Female"))
+whole$Race<- factor(whole$Race,
+                               levels = c(0:3),
+                               labels = c("White", "African American", "Asian", "American Indian / Alaskan Native"))
+whole$Ethnicity<- factor(whole$Ethnicity,
+                              levels = c(0, 1),
+                              labels = c("Non-hispanic", "Hispanic"))
+whole$smoking_history<- factor(whole$smoking_history,
+                              levels = c(0, 1),
+                              labels = c("Less than 100 cigarettes in your entire life", "At least 100 cigarettes in your entire life"))
+
+```
+
+# Chemicals
+## Summary statistics
+### Plasma POPs
+```{r, message=FALSE, warning=FALSE}
+
+#------------------------------------------ chemical in plasma
+
+plasma_POP<- c('PCB-153_plasma',	'PCB-138_plasma',	'PCB-118_plasma',	"4,4'-DDE_plasma", "2,4'-DDT_plasma", "HCB_plasma")
+LOD_value<- c(0.001,	0.013, 0.004,	0.005, 0.022, 0.005)
+plasma_POP_comment<- c('PCB-153_plasma_Comment',	'PCB-138_plasma_Comment',	'PCB-118_plasma_Comment',	"4,4'-DDE_plasma_Comment", "2,4'-DDT_plasma_Comment", "HCB_plasma_Comment")
+
+
+statistics<- c('LOD value',	'% > LOD',	'Min',	'Percentile 25', 'Median', 'Percentile 75', 'Max', 'Missing')
+Baseline<- c('Baseline',	'Baseline',	'Baseline',	'Baseline',	'Baseline',	'Baseline',	'Baseline',	'Baseline')
+month6<- c('6 month visit',	'6 month visit',	'6 month visit',	'6 month visit',	'6 month visit',	'6 month visit',	'6 month visit',	'6 month visit')
+
+
+#------------------------------------------ data preparation (make sure all subject has two visit)
+R21_other_plasma_POP_wide<- R21_other_plasma[,c("ID", plasma_POP, plasma_POP_comment, "visit")] %>% 
+  pivot_wider(
+    names_from = visit,
+    names_sep = "~",
+    values_from = c(ends_with("_plasma"), ends_with("_Comment"))
+  )
+
+R21_other_plasma_POP_complete_long<- R21_other_plasma_POP_wide %>% 
+  pivot_longer(cols = -ID, 
+               names_to = c(".value", "visit"), 
+               names_sep="~",
+               values_drop_na = FALSE)
+
+
+
+################################# 
+## baseline
+R21_other_plasma_POP_complete_long_baseline<- R21_other_plasma_POP_complete_long %>% 
+  filter(visit == "Baseline")
+
+plasma_POP_baseline_info<- data.frame(matrix(ncol = 7, nrow = 6))
+for (i in 1:6){
+  R21_other_plasma_POP_complete_long_baseline_plasma_POP<- R21_other_plasma_POP_complete_long_baseline[ ,plasma_POP]
+  R21_other_plasma_POP_complete_long_baseline_plasma_POP_comment<- R21_other_plasma_POP_complete_long_baseline[ ,plasma_POP_comment]
+  
+  plasma_POP_baseline_info[i, ]<- data.frame ((R21_other_plasma_POP_complete_long_baseline_plasma_POP_comment %>% 
+                                                 filter(R21_other_plasma_POP_complete_long_baseline_plasma_POP_comment[,i]==1) %>% 
+                                                 dplyr::summarise(percent=percent(n()/nrow(R21_other_plasma_POP_complete_long_baseline_plasma_POP_comment %>% na.omit()),1)))$percent, # %>LOD
+                                              format(round(min(R21_other_plasma_POP_complete_long_baseline_plasma_POP[ ,i], na.rm=TRUE),4),nsmall = 4), #MIN
+                                              format( round(quantile(R21_other_plasma_POP_complete_long_baseline_plasma_POP[ ,i],c(.25),na.rm=TRUE,type=2),4),nsmall = 4), #P25
+                                              format(round(quantile(R21_other_plasma_POP_complete_long_baseline_plasma_POP[ ,i],c(.50),na.rm=TRUE,type=2),4),nsmall = 4), # MEDIAN
+                                              format(round(quantile(R21_other_plasma_POP_complete_long_baseline_plasma_POP[ ,i],c(.75),na.rm=TRUE,type=2),4),nsmall = 4), #P75
+                                              format(round(max(R21_other_plasma_POP_complete_long_baseline_plasma_POP[ ,i], na.rm=TRUE),4),nsmall = 4), # MAX
+                                              (R21_other_plasma_POP_complete_long_baseline_plasma_POP %>% 
+                                                 filter(is.na(R21_other_plasma_POP_complete_long_baseline_plasma_POP[ ,i])==TRUE) %>% 
+                                                 dplyr::summarise(n=n()))$n) # MISSING NUMBER
+}
+
+plasma_POP_baseline_info_name<- cbind(statistics,
+                                      as.data.frame(t(data.frame(LOD_value,
+                                                                 plasma_POP_baseline_info))),
+                                      visit=Baseline)
+
+
+## 6 month
+R21_other_plasma_POP_complete_long_6month<- R21_other_plasma_POP_complete_long %>% 
+  filter(visit == "6 month")
+
+plasma_POP_6month_info<- data.frame(matrix(ncol = 7, nrow = 6))
+for (i in 1:6){
+  R21_other_plasma_POP_complete_long_6month_plasma_POP<- R21_other_plasma_POP_complete_long_6month[ ,plasma_POP]
+  R21_other_plasma_POP_complete_long_6month_plasma_POP_comment<- R21_other_plasma_POP_complete_long_6month[ ,plasma_POP_comment]
+  
+  plasma_POP_6month_info[i, ]<- data.frame ((R21_other_plasma_POP_complete_long_6month_plasma_POP_comment %>% 
+                                                 filter(R21_other_plasma_POP_complete_long_6month_plasma_POP_comment[,i]==1) %>% 
+                                                 dplyr::summarise(percent=percent(n()/nrow(R21_other_plasma_POP_complete_long_6month_plasma_POP_comment %>% na.omit()),1)))$percent,
+                                             format(round(min(R21_other_plasma_POP_complete_long_6month_plasma_POP[ ,i], na.rm=TRUE),4),nsmall = 4),
+                                             format(round(quantile(R21_other_plasma_POP_complete_long_6month_plasma_POP[ ,i],c(.25),na.rm=TRUE,type=2),4),nsmall = 4),
+                                             format(round(quantile(R21_other_plasma_POP_complete_long_6month_plasma_POP[ ,i],c(.50),na.rm=TRUE,type=2),4),nsmall = 4),
+                                             format( round(quantile(R21_other_plasma_POP_complete_long_6month_plasma_POP[ ,i],c(.75),na.rm=TRUE,type=2),4),nsmall = 4),
+                                             format( round(max(R21_other_plasma_POP_complete_long_6month_plasma_POP[ ,i], na.rm=TRUE),4),nsmall = 4),
+                                             (R21_other_plasma_POP_complete_long_6month_plasma_POP %>% 
+                                                 filter(is.na(R21_other_plasma_POP_complete_long_6month_plasma_POP[ ,i])==TRUE) %>% 
+                                                 dplyr::summarise(n=n()))$n)
+}
+
+plasma_POP_6month_info_name<- cbind(statistics,
+                                    as.data.frame(t(data.frame(LOD_value,
+                                                               plasma_POP_6month_info))),
+                                    visit=month6)
+
+
+
+## wilcox test
+### remove na from data
+R21_other_plasma_POP_wide_naomit<- R21_other_plasma[,c("ID", plasma_POP, plasma_POP_comment, "visit")] %>% 
+  pivot_wider(
+    names_from = visit,
+    names_sep = "~",
+    values_from = c(ends_with("_plasma"), ends_with("_Comment"))
+  ) %>% 
+  na.omit()
+
+R21_other_plasma_POP_complete_long_naomit<- R21_other_plasma_POP_wide_naomit %>% 
+  pivot_longer(cols = -ID, 
+               names_to = c(".value", "visit"), 
+               names_sep="~",
+               values_drop_na = FALSE)
+
+### calculate pvalue
+plasma_pvalue<-sapply(as.list(R21_other_plasma_POP_complete_long_naomit[,plasma_POP]), FUN = function(x) round(wilcox.test(x ~ R21_other_plasma_POP_complete_long_naomit$visit, paired=TRUE)$p.value, 3))
+
+
+## combine information
+plasma_POP_info_name<- rbind(plasma_POP_baseline_info_name,
+                             plasma_POP_6month_info_name)
+
+plasma_POP_info_name_group<- rbind((as_grouped_data(x=plasma_POP_info_name, groups=c("visit")) %>% 
+                             mutate(visits=ifelse(is.na(visit),statistics,visit)) %>% 
+                             select(visits, V1, V2, V3, V4, V5, V6)),
+                                   c("Comparison of mean POP concentrations across visit", rep(NA, 6)),
+                                   c("Baseline vs. 6 month: P-value", plasma_pvalue))
+
+## format table
+plasma_POP_info_name_table<- flextable(plasma_POP_info_name_group) %>% 
+  add_header_row(value=c("Plasma: N=33" ,"Organochlorine compounds (OCs) (ng/mL)"),colwidths=c(1, 6)) %>% 
+  set_header_labels(visits=" ", V1='PCB-153',	V2='PCB-138',	V3='PCB-118',	V4="4,4'-DDE", V5="2,4'-DDT", V6="HCB") %>% 
+  theme_box() %>% 
+  align(align="center",part="header") %>% 
+  style(i = c(1,10,19),  j=1,
+        pr_t = fp_text_default(
+          italic = TRUE, 
+          bold = TRUE)) %>% 
+  width(j=1, width=4, unit="cm") %>% 
+  width(j=2:7, width=2, unit="cm") %>% 
+  add_footer_lines(values=c("P-value from non-parametric Wilcoxon signed rank test", 
+                            "Remove NA from Wilcoxon signed rank test and only keep subject who has both visit measurements",
+                            "% > LOD was calculate by number of value above LOD / number of non-missing value"))
+
+plasma_POP_info_name_table
+
+
+```
+
+
+### Tissue POPs
+```{r, message=FALSE, warning=FALSE, fig.height=5, fig.width= 10}
+
+
+tissue_POP<- c('HCB_tissue',	"2,4'-DDE_tissue",	"4,4'-DDE_tissue",	'PCB-118_tissue',	"2,4'-DDT_tissue",	'PCB-153_tissue',	"4,4'-DDT_tissue",	'2,3,7,8-TCDD_tissue',	'PBDE-47_tissue',	'PBDE-85_tissue')
+LOD_value<- c(12.07,0.10,0.10,0.10,0.10,0.10,0.10,0.10,0.10,1.00)
+tissue_POP_comment<- c('HCB_tissue_Comment',	"2,4'-DDE_tissue_Comment",	"4,4'-DDE_tissue_Comment",	'PCB-118_tissue_Comment',	"2,4'-DDT_tissue_Comment",	'PCB-153_tissue_Comment',	"4,4'-DDT_tissue_Comment",	'2,3,7,8-TCDD_tissue_Comment',	'PBDE-47_tissue_Comment',	'PBDE-85_tissue_Comment')
+
+
+statistics<- c('LOD value',	'% > LOD',	'Min',	'Percentile 25', 'Median', 'Percentile 75', 'Max', 'Missing')
+VAT<- c('VAT',	'VAT',	'VAT',	'VAT',	'VAT',	'VAT',	'VAT',	'VAT')
+SAT<- c("SAT",	"SAT",	"SAT",	"SAT",	"SAT",	"SAT",	"SAT",	"SAT")
+
+#################################
+## VAT
+R21_tissue_VAT<- R21_tissue %>% 
+  filter(AT_Type == "VAT")
+
+tissue_POP_VAT_info<- data.frame(matrix(ncol = 7, nrow = 10))
+for (i in 1:10){
+  R21_tissue_VAT_tissue_POP<- R21_tissue_VAT[ ,tissue_POP]
+  R21_tissue_VAT_tissue_POP_comment<- R21_tissue_VAT[ ,tissue_POP_comment]
+  
+  tissue_POP_VAT_info[i, ]<- data.frame( (R21_tissue_VAT_tissue_POP_comment %>% 
+                                                filter(R21_tissue_VAT_tissue_POP_comment[,i]==1) %>% 
+                                                dplyr::summarise(percent=percent(n()/nrow(R21_tissue_VAT_tissue_POP_comment),1)))$percent,
+                                         format(round(min(R21_tissue_VAT_tissue_POP[ ,i], na.rm=TRUE),3),nsmall = 3),
+                                         format(round(quantile(R21_tissue_VAT_tissue_POP[ ,i],c(.25),na.rm=TRUE,type=2),3),nsmall = 3),
+                                         format(round(quantile(R21_tissue_VAT_tissue_POP[ ,i],c(.50),na.rm=TRUE,type=2),3),nsmall = 3),
+                                         format(round(quantile(R21_tissue_VAT_tissue_POP[ ,i],c(.75),na.rm=TRUE,type=2),3),nsmall = 3),
+                                         format(round(max(R21_tissue_VAT_tissue_POP[ ,i], na.rm=TRUE), 3), nsmall = 3),
+                                         (R21_tissue_VAT_tissue_POP %>% 
+                                                 filter(is.na(R21_tissue_VAT_tissue_POP[ ,i])==TRUE) %>% 
+                                                 dplyr::summarise(n=n()))$n)
+}
+
+tissue_POP_VAT_info_name<- cbind(statistics,
+                                      as.data.frame(t(data.frame(LOD_value,
+                                                                 tissue_POP_VAT_info))),
+                                      Type=VAT)
+
+
+## SAT
+R21_tissue_SAT<- R21_tissue %>% 
+  filter(AT_Type == "SAT")
+
+tissue_POP_SAT_info<- data.frame(matrix(ncol = 7, nrow = 10))
+for (i in 1:10){
+  R21_tissue_SAT_tissue_POP<- R21_tissue_SAT[ ,tissue_POP]
+  R21_tissue_SAT_tissue_POP_comment<- R21_tissue_SAT[ ,tissue_POP_comment]
+  
+  tissue_POP_SAT_info[i, ]<- data.frame( (R21_tissue_SAT_tissue_POP_comment %>% 
+                                            filter(R21_tissue_SAT_tissue_POP_comment[,i]==1) %>% 
+                                            dplyr::summarise(percent=percent(n()/nrow(R21_tissue_SAT_tissue_POP_comment),1)))$percent,
+                                         format(round(min(R21_tissue_SAT_tissue_POP[ ,i], na.rm=TRUE),3),nsmall = 3),
+                                         format(round(quantile(R21_tissue_SAT_tissue_POP[ ,i],c(.25),na.rm=TRUE,type=2),3),nsmall = 3),
+                                         format(round(quantile(R21_tissue_SAT_tissue_POP[ ,i],c(.50),na.rm=TRUE,type=2),3),nsmall = 3),
+                                         format(round(quantile(R21_tissue_SAT_tissue_POP[ ,i],c(.75),na.rm=TRUE,type=2),3),nsmall = 3),
+                                         format(round(max(R21_tissue_SAT_tissue_POP[ ,i], na.rm=TRUE),3),nsmall = 3),
+                                         (R21_tissue_SAT_tissue_POP %>% 
+                                            filter(is.na(R21_tissue_SAT_tissue_POP[ ,i])==TRUE) %>% 
+                                            dplyr::summarise(n=n()))$n)
+}
+
+tissue_POP_SAT_info_name<- cbind(statistics,
+                                      as.data.frame(t(data.frame(LOD_value,
+                                                                 tissue_POP_SAT_info))),
+                                      Type=SAT)
+
+### calculate pvalue
+tissue_pvalue<-sapply(as.list(R21_tissue[,tissue_POP]), FUN = function(x) round(wilcox.test(x ~ R21_tissue$AT_Type, paired=TRUE)$p.value, 3))
+
+## combine information
+tissue_POP_info_name<- rbind(tissue_POP_VAT_info_name,
+                             tissue_POP_SAT_info_name)
+
+tissue_POP_info_name_group<- rbind((as_grouped_data(x=tissue_POP_info_name, groups=c("Type")) %>% 
+  mutate(types=ifelse(is.na(Type),statistics,Type)) %>% 
+  select(types, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10)),
+  c("Comparison of mean POP concentrations across AT type", rep(NA, 10)),
+  c("SAT vs. VAT: P-value", tissue_pvalue))
+
+## format table
+tissue_POP_info_name_table<- flextable(tissue_POP_info_name_group) %>% 
+  add_header_row(value=c("Tissue: N=28" ,"Organochlorine compounds (OCs) (ng/g)", "Polybrominated diphenyl ethers (ng/g)"),colwidths=c(1, 8, 2)) %>% 
+  set_header_labels(types=" ",V1='HCB',	V2="2,4'-DDE",	V3="4,4'-DDE",	V4='PCB-118',	V5="2,4'_DDT",	V6='PCB-153',	V7="4,4'_DDT",	V8='2,3,7,8-TCDD',	V9='PBDE-47',	V10='PBDE-85') %>% 
+  theme_box() %>% 
+  align(align="center",part="header") %>% 
+  style(i = c(1,10,19),  j=1,
+        pr_t = fp_text_default(
+          italic = TRUE, 
+          bold = TRUE)) %>% 
+  width(j=1, width=4, unit="cm") %>% 
+  width(j=2:11, width=2.5, unit="cm")%>% 
+  add_footer_lines(values=c("P-value from non-parametric Wilcoxon signed rank test",
+                            "NaN: not applicable due to 0% >LOD"))
+
+tissue_POP_info_name_table
+
+
+
+
+```
+
+
+# Demographic variables
+```{r}
+
+
+## plasma: all subjects at baseline
+demo_summary1<- whole %>% 
+               filter(plasma_ind==1) %>% 
+               select(surgerytype, Age, Sex, Race, Ethnicity, days_to_surgery, days_to_visit2, smoking_history) %>% 
+               tbl_summary(
+                  statistic = list(all_continuous() ~ "{min}, {p25}, {median}, {p75}, {max}"),
+                 label = list(days_to_surgery ~ "Days from baseline to the day of surgery",
+                              days_to_visit2 ~ "Days from surgery to the day of 2nd visit"),
+                 missing_text = "Missing"
+               ) %>% 
+               bold_labels()
+
+
+## plasma: only keep subjects who have two timepoint visit 
+demo_summary2<- whole %>% 
+                        filter(plasma_ind==1 & both_ind==2) %>% 
+                        tbl_summary(
+                            include = c(surgerytype, Age, Sex, Race, Ethnicity, days_to_surgery, days_to_visit2, smoking_history),
+                            statistic = list(all_continuous() ~ "{min}, {p25}, {median}, {p75}, {max}"),
+                            label = list(days_to_surgery ~ "Days from baseline to the day of surgery",
+                            days_to_visit2 ~ "Days from surgery to the day of 2nd visit"),
+                            missing_text = "Missing"
+                            ) %>% 
+                        bold_labels()
+## tissue
+demo_summary3 <- whole %>% 
+                 filter(tissue_ind==1) %>% 
+                 tbl_summary(
+                            include = c(surgerytype, Age, Sex, Race, Ethnicity, days_to_surgery, days_to_visit2, smoking_history),
+                            statistic = list(all_continuous() ~ "{min}, {p25}, {median}, {p75}, {max}"),
+                            label = list(days_to_surgery ~ "Days from baseline to the day of surgery",
+                            days_to_visit2 ~ "Days from surgery to the day of 2nd visit"),
+                            missing_text = "Missing"
+                           ) %>% 
+                          bold_labels()
+## tissue: only keep subjects who have two timepoint visit 
+demo_summary4 <- whole %>% 
+                 filter(tissue_ind==1 & both_ind==2) %>% 
+                 tbl_summary(
+                            include = c(surgerytype, Age, Sex, Race, Ethnicity, days_to_surgery, days_to_visit2, smoking_history),
+                            statistic = list(all_continuous() ~ "{min}, {p25}, {median}, {p75}, {max}"),
+                            label = list(days_to_surgery ~ "Days from baseline to the day of surgery",
+                            days_to_visit2 ~ "Days from surgery to the day of 2nd visit"),
+                            missing_text = "Missing"
+                           ) %>% 
+                          bold_labels()
+                             
+              
+
+demo<- tbl_merge(tbls = list(demo_summary1, demo_summary2,demo_summary3,demo_summary4),
+                 tab_spanner = c("**Plasma: Subjects at Baseline**", "**Plasma: Subjects with two time points recorded**", "**Tissue: Subjects at Baseline**", "**Tissue: Subjects with two time points recorded**"))
+
+demo
+
+```
+
+# Metabolic variables
+## summary statistics
+```{r}
+
+
+metabolic<- c('height_m',	'Weight_kg',	'reg_pfat',	'tot_lean_kg',	'tot_fat_kg',	'tot_lean_index',	'tot_fat_index',	'vis_fat_mass_kg', 'Glucose mg/dl', 'Insulin uU/ml',	'Baseline_HOMA_IR_NEW',	'AIRg',	'DI',	'SI', 'Chol_mgdl', 'TG_mgdl', 'HDL_mgdl', 'LDL_mgdl')
+Baseline<- c('Baseline',	'Baseline',		'Baseline',	'Baseline','Baseline',	'Baseline')
+month6<- c('6 month visit',	'6 month visit',	'6 month visit','6 month visit','6 month visit',	'6 month visit')
+statistics<- c('Min',	'Percentile 25', 'Median', 'Percentile 75', 'Max', 'Missing')
+
+#################################
+## baseline
+R21_other_plasma_baseline<- R21_other_plasma %>% 
+                            filter(visit == "Baseline")
+
+metabolic_baseline_info<- data.frame(matrix(ncol = 6, nrow = 18))
+for (i in 1:18){
+  R21_other_plasma_baseline_metabolic<- R21_other_plasma_baseline[ ,metabolic]
+  
+  metabolic_baseline_info[i, ]<- data.frame( format(round(min(R21_other_plasma_baseline_metabolic[ ,i], na.rm=TRUE),2),nsmall = 2),
+                                         format(round(quantile(R21_other_plasma_baseline_metabolic[ ,i],c(.25),na.rm=TRUE,type=2),2),nsmall = 2),
+                                         format(round(quantile(R21_other_plasma_baseline_metabolic[ ,i],c(.50),na.rm=TRUE,type=2),2),nsmall = 2),
+                                         format(round(quantile(R21_other_plasma_baseline_metabolic[ ,i],c(.75),na.rm=TRUE,type=2),2),nsmall = 2),
+                                         format(round(max(R21_other_plasma_baseline_metabolic[ ,i], na.rm=TRUE), 2), nsmall = 2),
+                                         (R21_other_plasma_baseline_metabolic %>% 
+                                                 filter(is.na(R21_other_plasma_baseline_metabolic[ ,i])==TRUE) %>% 
+                                                 dplyr::summarise(n=n()))$n)
+}
+
+metabolic_baseline_info_name<- cbind(statistics,
+                                     as.data.frame(t(metabolic_baseline_info)),
+                                     visit=Baseline)
+
+
+
+
+## 6 month
+R21_other_plasma_6month<- R21_other_plasma %>% 
+                            filter(visit == "6 month")
+
+metabolic_6month_info<- data.frame(matrix(ncol = 6, nrow = 18))
+for (i in 1:18){
+  R21_other_plasma_6month_metabolic<- R21_other_plasma_6month[ ,metabolic]
+  
+  metabolic_6month_info[i, ]<- data.frame( format(round(min(R21_other_plasma_6month_metabolic[ ,i], na.rm=TRUE),2),nsmall = 2),
+                                         format(round(quantile(R21_other_plasma_6month_metabolic[ ,i],c(.25),na.rm=TRUE,type=2),2),nsmall = 2),
+                                         format(round(quantile(R21_other_plasma_6month_metabolic[ ,i],c(.50),na.rm=TRUE,type=2),2),nsmall = 2),
+                                         format(round(quantile(R21_other_plasma_6month_metabolic[ ,i],c(.75),na.rm=TRUE,type=2),2),nsmall = 2),
+                                         format(round(max(R21_other_plasma_6month_metabolic[ ,i], na.rm=TRUE), 2), nsmall = 2),
+                                         (R21_other_plasma_6month_metabolic %>% 
+                                                 filter(is.na(R21_other_plasma_6month_metabolic[ ,i])==TRUE) %>% 
+                                                 dplyr::summarise(n=6+n()))$n)
+}
+
+metabolic_6month_info_name<- cbind(statistics,
+                                    as.data.frame(t(metabolic_6month_info)),
+                                     visit=month6)
+
+
+
+## combine information
+metabolic_info_name<- rbind(metabolic_baseline_info_name,
+                            metabolic_6month_info_name)
+
+metabolic_info_name_group<- rbind((as_grouped_data(x=metabolic_info_name, groups=c("visit")) %>% 
+                            mutate(visits=ifelse(is.na(visit),statistics,visit)) %>% 
+                            select(visits, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18)))
+
+## format table
+metabolic_info_name_group<- as_grouped_data(x=metabolic_info_name, groups=c("visit"))
+
+metabolic_info_name_table<- flextable(metabolic_info_name_group) %>% 
+                            add_header_row(value=c("Summary statistics for Metabolic outcomes (N=33)"),colwidths=c(20)) %>% 
+                            set_header_labels(visits=" ", V1='Height (m)',	V2='Weight (kg)',	V3='total fal %',	V4='total lean mass (kg)',	V5='total fat mass (kg)',	V6='total lean mass index',	V7='total fat mass index',	V8='visceral fat mass (kg)', V9='Glucose (mg/dl)', V10='Insulin (uU/ml)',	V11='HOMA-IR',	V12='AIRg',	V13='DI',	V14='SI', V15='Chol_mgdl', V16='TG_mgdl', V17='HDL_mgdl', V18='LDL_mgdl'
+) %>% 
+                            theme_box()%>% 
+                            align(align="center",part="header") %>% 
+                            style(i = c(1,8),  j=1,
+                                  pr_t = fp_text_default(
+                                  italic = TRUE, 
+                                  bold = TRUE)) %>% 
+                            width(j=1, width=4, unit="cm") %>% 
+                            width(j=2:7, width=2, unit="cm")
+metabolic_info_name_table
+
+
+
+```

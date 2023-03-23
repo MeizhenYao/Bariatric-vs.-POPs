@@ -1,0 +1,376 @@
+---
+title: "Emory R21 Database"
+author: "Meizhen Yao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r,message=FALSE,warning=FALSE,include=FALSE}
+
+library(broom)
+library(tidyverse)
+library(ggpubr)
+library(cowplot)
+library(gridExtra)
+library(readxl)
+library(boot)
+library(plyr)
+library(Rcpp)
+library(readr)
+library(writexl)
+library(forcats)
+library(GGally)
+
+```
+
+
+# Tissue POPs
+```{r}
+## loading data
+raw_chemical_at<-  read_excel("~/Projects/Emory R21 Study/input/emory/HRE0022_EmoryR21_For_Distribution_20220111_v1.xlsx")
+
+## only keep raws contain values
+raw_chemical_at_values<- raw_chemical_at[4:74,]
+
+## rename columns
+colnames(raw_chemical_at_values)<- c("Sample_ID","Sample_Type","HCB_tissue","2,4'-DDE_tissue","4,4'-DDE_tissue","PCB-118_tissue","2,4'-DDT_tissue","PCB-153_tissue","4,4'-DDT_tissue","2,3,7,8-TCDD_tissue","PBDE-47_tissue","PBDE-85_tissue")
+
+## change character variables to numeric variables
+raw_chemical_at_values$HCB_tissue<- as.numeric(raw_chemical_at_values$HCB_tissue)
+raw_chemical_at_values$`2,4'-DDE_tissue`<- as.numeric(raw_chemical_at_values$`2,4'-DDE_tissue`)
+raw_chemical_at_values$`4,4'-DDE_tissue`<- as.numeric(raw_chemical_at_values$`4,4'-DDE_tissue`)
+raw_chemical_at_values$`PCB-118_tissue`<- as.numeric(raw_chemical_at_values$`PCB-118_tissue`)
+raw_chemical_at_values$`2,4'-DDT_tissue`<- as.numeric(raw_chemical_at_values$`2,4'-DDT_tissue`)
+raw_chemical_at_values$`PCB-153_tissue`<- as.numeric(raw_chemical_at_values$`PCB-153_tissue`)
+raw_chemical_at_values$`4,4'-DDT_tissue`<- as.numeric(raw_chemical_at_values$`4,4'-DDT_tissue`)
+raw_chemical_at_values$`2,3,7,8-TCDD_tissue`<- as.numeric(raw_chemical_at_values$`2,3,7,8-TCDD_tissue`)
+raw_chemical_at_values$`PBDE-47_tissue`<- as.numeric(raw_chemical_at_values$`PBDE-47_tissue`)
+raw_chemical_at_values$`PBDE-85_tissue`<- as.numeric(raw_chemical_at_values$`PBDE-85_tissue`)
+
+## Remove QA values & for duplicate only keep the second value
+raw_chemical_at_values_sample<- raw_chemical_at_values %>% 
+                                filter(Sample_Type=="Study Sample" & Sample_ID != "OBE031-SAT_45") %>% 
+                                mutate(order = duplicated(Sample_ID)) %>% # indicate order: FALSE-1, TRUE-2
+                                group_by(Sample_ID) %>% 
+                                dplyr::mutate(repeat_time = n()) %>% # indicate duplicate: 1-no duplicate, 2-have duplicate
+                                separate(Sample_ID, into=c("Sample_ID","AT_Type"),sep="-") %>% 
+                                filter(!(repeat_time == 2 & order == FALSE)) %>%  # for duplicate only keep second value
+                                select(-c("repeat_time", "order"))
+
+
+## Add LOD columns
+raw_chemical_at_values_sample$HCB_tissue_Comment<- raw_chemical_at_values_sample$HCB_tissue
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$HCB_tissue[i]<12.07){raw_chemical_at_values_sample$HCB_tissue_Comment[i]<-0}
+  else if (raw_chemical_at_values_sample$HCB_tissue[i]>=12.07){raw_chemical_at_values_sample$HCB_tissue_Comment[i]<-1}
+}
+
+raw_chemical_at_values_sample$`2,4'-DDE_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`2,4'-DDE_tissue`[i]<0.1){raw_chemical_at_values_sample$`2,4'-DDE_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`2,4'-DDE_tissue`[i]>=0.1){raw_chemical_at_values_sample$`2,4'-DDE_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`4,4'-DDE_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`4,4'-DDE_tissue`[i]<0.1){raw_chemical_at_values_sample$`4,4'-DDE_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`4,4'-DDE_tissue`[i]>=0.1){raw_chemical_at_values_sample$`4,4'-DDE_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`PCB-118_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`PCB-118_tissue`[i]<0.1){raw_chemical_at_values_sample$`PCB-118_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`PCB-118_tissue`[i]>=0.1){raw_chemical_at_values_sample$`PCB-118_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`2,4'-DDT_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`2,4'-DDT_tissue`[i]<0.1){raw_chemical_at_values_sample$`2,4'-DDT_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`2,4'-DDT_tissue`[i]>=0.1){raw_chemical_at_values_sample$`2,4'-DDT_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`PCB-153_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`PCB-153_tissue`[i]<0.1){raw_chemical_at_values_sample$`PCB-153_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`PCB-153_tissue`[i]>=0.1){raw_chemical_at_values_sample$`PCB-153_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`4,4'-DDT_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`4,4'-DDT_tissue`[i]<0.1){raw_chemical_at_values_sample$`4,4'-DDT_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`4,4'-DDT_tissue`[i]>=0.1){raw_chemical_at_values_sample$`4,4'-DDT_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue`[i]<0.1){raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue`[i]>=0.1){raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`PBDE-47_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`PBDE-47_tissue`[i]<0.1){raw_chemical_at_values_sample$`PBDE-47_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`PBDE-47_tissue`[i]>=0.1){raw_chemical_at_values_sample$`PBDE-47_tissue_Comment`[i]<-1}
+}
+
+raw_chemical_at_values_sample$`PBDE-85_tissue_Comment`<- rep(NA, 56)
+for(i in 1:nrow(raw_chemical_at_values_sample)){
+  if (raw_chemical_at_values_sample$`PBDE-85_tissue`[i]<1){raw_chemical_at_values_sample$`PBDE-85_tissue_Comment`[i]<-0}
+  else if (raw_chemical_at_values_sample$`PBDE-85_tissue`[i]>=1){raw_chemical_at_values_sample$`PBDE-85_tissue_Comment`[i]<-1}
+}
+
+## replace <LOD value with LOD/2
+raw_chemical_at_values_sample$HCB_tissue<- ifelse(raw_chemical_at_values_sample$HCB_tissue_Comment == 0, 12.07/sqrt(2), raw_chemical_at_values_sample$HCB_tissue)
+raw_chemical_at_values_sample$`2,4'-DDE_tissue`<- ifelse(raw_chemical_at_values_sample$`2,4'-DDE_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`2,4'-DDE_tissue`)
+raw_chemical_at_values_sample$`4,4'-DDE_tissue`<- ifelse(raw_chemical_at_values_sample$`4,4'-DDE_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`4,4'-DDE_tissue`)
+raw_chemical_at_values_sample$`PCB-118_tissue`<- ifelse(raw_chemical_at_values_sample$`PCB-118_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`PCB-118_tissue`)
+raw_chemical_at_values_sample$`2,4'-DDT_tissue`<- ifelse(raw_chemical_at_values_sample$`2,4'-DDT_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`2,4'-DDT_tissue`)
+raw_chemical_at_values_sample$`PCB-153_tissue`<- ifelse(raw_chemical_at_values_sample$`PCB-153_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`PCB-153_tissue`)
+raw_chemical_at_values_sample$`4,4'-DDT_tissue`<- ifelse(raw_chemical_at_values_sample$`4,4'-DDT_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`4,4'-DDT_tissue`)
+raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue`<- ifelse(raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`2,3,7,8-TCDD_tissue`)
+raw_chemical_at_values_sample$`PBDE-47_tissue`<- ifelse(raw_chemical_at_values_sample$`PBDE-47_tissue_Comment` == 0, 0.1/sqrt(2), raw_chemical_at_values_sample$`PBDE-47_tissue`)
+raw_chemical_at_values_sample$`PBDE-85_tissue`<- ifelse(raw_chemical_at_values_sample$`PBDE-85_tissue_Comment` == 0, 1/sqrt(2), raw_chemical_at_values_sample$`PBDE-85_tissue`)
+
+
+
+#------------------------------------------Export data set
+write_xlsx(raw_chemical_at_values_sample, "~/Projects/Emory R21 Study/output/Raw Data/EmoryR21_Targeted_Adipose_Tissue_Chemical_Exposure_levels_LongFormat_03092023.xlsx")
+
+```
+
+<!-- # EmoryR21_Targeted_Adipose_Tissue_Chemical_Exposure_levels_WideFormat_20220131 -->
+<!-- ```{r} -->
+<!-- ## loading data -->
+<!-- raw_chemical_at_values_sample<-  read_excel("~/Projects/Emory R21 Study/output/Raw Data/EmoryR21_Targeted_Adipose_Tissue_Chemical_Exposure_levels_LongFormat_20220928.xlsx") -->
+
+<!-- ## long to wide -->
+<!-- raw_chemical_at_values_sample_wide<- raw_chemical_at_values_sample %>% -->
+<!--                                      pivot_wider(names_from = AT_Type, -->
+<!--                                                  values_from = c(HCB,`2,4'-DDE`,`4,4'-DDE`,PCB-118,`2,4'-DDT`,PCB-153,`4,4'-DDT`,`2,3,7,8-TCDD`,PBDE-47,PBDE-85)) -->
+
+
+<!-- ``` -->
+
+# Plasma POPs & other variables
+## add HCB in plasma POPs
+```{r}
+## add HCB in plasma POPs
+## loading data
+HCB_wide <- read_excel("~/Projects/Emory R21 study/input/intermediate/HCB.xlsx", col_names = FALSE)
+
+## transpose data
+HCB_long<- data.frame(t(HCB_wide))
+
+## rename data
+colnames(HCB_long)[1]<- "subjid"
+colnames(HCB_long)[2]<- "HCB_plasma"
+
+## standardize ID column and adjust values in ID column
+HCB_long<- HCB_long %>% 
+           filter(is.na(subjid)==FALSE & subjid != "Chemical Name" & subjid != "Class of Compound" & subjid != "Role" & subjid != "Soluble") %>% 
+           separate(col = "subjid", sep = "_", into = c("subjid_2", "visit"), remove = TRUE, extra = "drop") %>% 
+           mutate(visit = case_when(visit == "v1" ~ "Baseline",
+                                    visit == "v2" ~ "6 month",
+                                    is.na(visit) == TRUE ~ "Baseline"))
+
+HCB_long$ID<- HCB_long$subjid_2
+for(i in 1:nrow(HCB_long)){
+  if(is.na(HCB_long$subjid_2[i])==TRUE) {HCB_long$ID[i]<- NA}
+  else if(nchar(HCB_long$subjid_2[i]) == 6) {HCB_long$ID[i]<- HCB_long$subjid_2[i]}
+  else if(nchar(HCB_long$subjid_2[i]) == 4) {HCB_long$ID[i]<- gsub("OBE", "OBE00", HCB_long$subjid_2[i])}
+  else if(nchar(HCB_long$subjid_2[i]) == 5) {HCB_long$ID[i]<- gsub("OBE", "OBE0", HCB_long$subjid_2[i])}
+}           
+
+HCB_long<- HCB_long[,2:4]
+
+```
+
+
+## Format final POPs data
+```{r}
+## loading data
+metadata <- read_csv("~/Projects/Emory R21 study/input/emory/obesogen_metagenomics_metadata_10.31.2022_735pm_trz_csv.csv")
+
+## combine HCB into main data
+R21_other_plasma<- metadata %>% 
+                   left_join(HCB_long, by = c("ID", "visit")) %>% 
+                   relocate('HCB_plasma', .after = `2,4'-DDT_plasma`) 
+              
+## reassign value NA for Data N/A
+R21_other_plasma[R21_other_plasma == "Data N/A"]<- NA
+
+## convert character to numeric
+R21_other_plasma<- R21_other_plasma %>% 
+                  mutate_at(c("days_to_surgery", "days_to_visit2", "Glucose mg/dl", "Insulin uU/ml", "Baseline_HOMA_IR_NEW", "AIRg", "DI", "SI", "PCB-153_plasma", "PCB-138_plasma", "PCB-118_plasma", "4,4'-DDE_plasma", "2,4'-DDT_plasma", "HCB_plasma", "Chol_mgdl", "TG_mgdl", "HDL_mgdl", "LDL_mgdl"), as.numeric)
+## create LOD indicator
+R21_other_plasma$`PCB-153_plasma_Comment`<- rep(NA, 60)
+for(i in 1:nrow(R21_other_plasma)){
+  if (is.na(R21_other_plasma$`PCB-153_plasma`[i]) == TRUE){R21_other_plasma$`PCB-153_plasma_Comment`[i]<-NA}
+  else if (R21_other_plasma$`PCB-153_plasma`[i]<0.001){R21_other_plasma$`PCB-153_plasma_Comment`[i]<-0}
+  else if (R21_other_plasma$`PCB-153_plasma`[i]>=0.001){R21_other_plasma$`PCB-153_plasma_Comment`[i]<-1}
+}
+
+R21_other_plasma$`PCB-138_plasma_Comment`<- rep(NA, 60)
+for(i in 1:nrow(R21_other_plasma)){
+  if (is.na(R21_other_plasma$`PCB-138_plasma`[i]) == TRUE){R21_other_plasma$`PCB-138_plasma_Comment`[i]<-NA}
+  else if (R21_other_plasma$`PCB-138_plasma`[i]<0.001){R21_other_plasma$`PCB-138_plasma_Comment`[i]<-0}
+  else if (R21_other_plasma$`PCB-138_plasma`[i]>=0.001){R21_other_plasma$`PCB-138_plasma_Comment`[i]<-1}
+}
+
+R21_other_plasma$`PCB-118_plasma_Comment`<- rep(NA, 60)
+for(i in 1:nrow(R21_other_plasma)){
+  if (is.na(R21_other_plasma$`PCB-118_plasma`[i]) == TRUE){R21_other_plasma$`PCB-118_plasma_Comment`[i]<-NA}
+  else if (R21_other_plasma$`PCB-118_plasma`[i]<0.001){R21_other_plasma$`PCB-118_plasma_Comment`[i]<-0}
+  else if (R21_other_plasma$`PCB-118_plasma`[i]>=0.001){R21_other_plasma$`PCB-118_plasma_Comment`[i]<-1}
+}
+
+R21_other_plasma$`4,4'-DDE_plasma_Comment`<- rep(NA, 60)
+for(i in 1:nrow(R21_other_plasma)){
+  if (is.na(R21_other_plasma$`4,4'-DDE_plasma`[i]) == TRUE){R21_other_plasma$`4,4'-DDE_plasma_Comment`[i]<-NA}
+  else if (R21_other_plasma$`4,4'-DDE_plasma`[i]<0.001){R21_other_plasma$`4,4'-DDE_plasma_Comment`[i]<-0}
+  else if (R21_other_plasma$`4,4'-DDE_plasma`[i]>=0.001){R21_other_plasma$`4,4'-DDE_plasma_Comment`[i]<-1}
+}
+
+R21_other_plasma$`2,4'-DDT_plasma_Comment`<- rep(NA, 60)
+for(i in 1:nrow(R21_other_plasma)){
+  if (is.na(R21_other_plasma$`2,4'-DDT_plasma`[i]) == TRUE){R21_other_plasma$`2,4'-DDT_plasma_Comment`[i]<-NA}
+  else if (R21_other_plasma$`2,4'-DDT_plasma`[i]<0.001){R21_other_plasma$`2,4'-DDT_plasma_Comment`[i]<-0}
+  else if (R21_other_plasma$`2,4'-DDT_plasma`[i]>=0.001){R21_other_plasma$`2,4'-DDT_plasma_Comment`[i]<-1}
+}
+
+R21_other_plasma$`HCB_plasma_Comment`<- rep(NA, 60)
+for(i in 1:nrow(R21_other_plasma)){
+  if (is.na(R21_other_plasma$`HCB_plasma`[i]) == TRUE){R21_other_plasma$`HCB_plasma_Comment`[i]<-NA}
+  else if (R21_other_plasma$`HCB_plasma`[i]<0.005){R21_other_plasma$`HCB_plasma_Comment`[i]<-0}
+  else if (R21_other_plasma$`HCB_plasma`[i]>=0.005){R21_other_plasma$`HCB_plasma_Comment`[i]<-1}
+}
+
+## replace <LOD value with LOD/2
+R21_other_plasma$`PCB-153_plasma`<- ifelse(R21_other_plasma$`PCB-153_plasma_Comment` == 0, 0.001/sqrt(2), R21_other_plasma$`PCB-153_plasma`)
+R21_other_plasma$`PCB-138_plasma`<- ifelse(R21_other_plasma$`PCB-138_plasma_Comment` == 0, 0.013/sqrt(2), R21_other_plasma$`PCB-138_plasma`)
+R21_other_plasma$`PCB-118_plasma`<- ifelse(R21_other_plasma$`PCB-118_plasma_Comment` == 0, 0.004/sqrt(2), R21_other_plasma$`PCB-118_plasma`)
+R21_other_plasma$`4,4'-DDE_plasma`<- ifelse(R21_other_plasma$`4,4'-DDE_plasma_Comment` == 0, 0.005/sqrt(2), R21_other_plasma$`4,4'-DDE_plasma`)
+R21_other_plasma$`2,4'-DDT_plasma`<- ifelse(R21_other_plasma$`2,4'-DDT_plasma_Comment` == 0, 0.022/sqrt(2), R21_other_plasma$`2,4'-DDT_plasma`)
+R21_other_plasma$`HCB_plasma`<- ifelse(R21_other_plasma$`HCB_plasma_Comment` == 0, 0.005/sqrt(2), R21_other_plasma$`HCB_plasma`)
+
+
+
+
+#------------------------------------------Export data set
+write_xlsx(R21_other_plasma, "~/Projects/Emory R21 Study/output/Raw Data/obesogen_R21_metadata_03092023.xlsx")
+
+```
+
+
+
+# Final data (long format)
+```{r}
+## Loading data
+Tissue<-  read_excel("~/Projects/Emory R21 Study/output/Raw Data/EmoryR21_Targeted_Adipose_Tissue_Chemical_Exposure_levels_LongFormat_03092023.xlsx")
+Plasma<-  read_excel("~/Projects/Emory R21 Study/output/Raw Data/obesogen_R21_metadata_03092023.xlsx")
+
+## Combine
+write_xlsx(list(Plasma_other = Plasma, Tissue = Tissue), "~/Projects/Emory R21 Study/output/Nate/obesogen_R21_metadata_total_nate_03092022.xlsx")
+```
+
+# Whole data in wide format
+```{r}
+
+
+R21_other_plasma <- read_excel("~/Projects/Emory R21 study/output/Nate/obesogen_R21_metadata_total_nate_03092022.xlsx", sheet = "Plasma_other")
+
+R21_tissue <- read_excel("~/Projects/Emory R21 study/output/Nate/obesogen_R21_metadata_total_nate_03092022.xlsx", sheet = "Tissue")
+names(R21_tissue)[1]<- "ID"
+
+R21_other_plasma<- R21_other_plasma %>% 
+                          group_by(ID) %>% 
+                          dplyr::mutate(both_ind=n()) # indicator for whether subject has both timepoint records
+
+## rename variables & create new variables
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "PCB-153_plasma")] <- "pcb_153_plasma"
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "PCB-138_plasma")] <- "pcb_138_plasma"
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "PCB-118_plasma")] <- "pcb_118_plasma"
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "4,4'-DDE_plasma")] <- "dde_4_4_plasma"
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "2,4'-DDT_plasma")] <- "ddt_2_4_plasma"
+
+R21_other_plasma$pcb_153_plasma_Comment <- factor(R21_other_plasma$`PCB-153_plasma_Comment`, levels = c(0, 1))
+R21_other_plasma$pcb_138_plasma_Comment <- factor(R21_other_plasma$`PCB-138_plasma_Comment`, levels = c(0, 1))
+R21_other_plasma$pcb_118_plasma_Comment <- factor(R21_other_plasma$`PCB-118_plasma_Comment`, levels = c(0, 1))
+R21_other_plasma$dde_4_4_plasma_Comment <- factor(R21_other_plasma$`4,4'-DDE_plasma_Comment`, levels = c(0, 1))
+R21_other_plasma$ddt_2_4_plasma_Comment <- factor(R21_other_plasma$`2,4'-DDT_plasma_Comment`, levels = c(0, 1))
+R21_other_plasma<- select(R21_other_plasma, -c(`PCB-153_plasma_Comment`, 
+                                               `PCB-138_plasma_Comment`,
+                                               `PCB-118_plasma_Comment`,
+                                               `4,4'-DDE_plasma_Comment`,
+                                               `2,4'-DDT_plasma_Comment`))
+
+
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "Glucose mg/dl")] <- "glucose"
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "Insulin uU/ml")] <- "insulin"
+
+
+colnames(R21_other_plasma)[which(names(R21_other_plasma) == "100cigarettes")] <- "smoking_history"
+
+
+R21_other_plasma$visit <- ifelse(R21_other_plasma$visit=="6 month", "6month", "Baseline")
+R21_other_plasma$bmi <- (R21_other_plasma$Weight_kg)/((R21_other_plasma$height_m)^2)
+
+colnames(R21_tissue)[which(names(R21_tissue) == "2,4'-DDE_tissue")] <- "dde_2_4_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "4,4'-DDE_tissue")] <- "dde_4_4_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "PCB-118_tissue")] <- "pcb_118_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "2,4'-DDT_tissue")] <- "ddt_2_4_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "PCB-153_tissue")] <- "pcb_153_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "4,4'-DDT_tissue")] <- "ddt_4_4_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "2,3,7,8-TCDD_tissue")] <- "tcdd_2_3_7_8_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "PBDE-47_tissue")] <- "pbde_47_tissue"
+colnames(R21_tissue)[which(names(R21_tissue) == "PBDE-85_tissue")] <- "pbde_85_tissue"
+
+R21_tissue$dde_2_4_tissue_Comment <- factor(R21_tissue$`2,4'-DDE_tissue_Comment`, levels = c(0, 1))
+R21_tissue$dde_4_4_tissue_Comment <- factor(R21_tissue$`4,4'-DDE_tissue_Comment`, levels = c(0, 1))
+R21_tissue$pcb_118_tissue_Comment <- factor(R21_tissue$`PCB-118_tissue_Comment`, levels = c(0, 1))
+R21_tissue$pcb_153_tissue_Comment <- factor(R21_tissue$`PCB-153_tissue_Comment`, levels = c(0, 1))
+R21_tissue$ddt_2_4_tissue_Comment <- factor(R21_tissue$`2,4'-DDT_tissue_Comment`, levels = c(0, 1))
+R21_tissue$ddt_4_4_tissue_Comment <- factor(R21_tissue$`4,4'-DDT_tissue_Comment`, levels = c(0, 1))
+R21_tissue$tcdd_2_3_7_8_tissue_Comment <- factor(R21_tissue$`2,3,7,8-TCDD_tissue_Comment`, levels = c(0, 1))
+R21_tissue$pbde_47_tissue_Comment <- factor(R21_tissue$`PBDE-47_tissue_Comment`, levels = c(0, 1))
+R21_tissue$pbde_85_tissue_Comment <- factor(R21_tissue$`PBDE-85_tissue_Comment`, levels = c(0, 1))
+R21_tissue<- select(R21_tissue, -c(`2,4'-DDE_tissue_Comment`, 
+                                   `4,4'-DDE_tissue_Comment`,
+                                   `PCB-118_tissue_Comment`,
+                                   `PCB-153_tissue_Comment`,
+                                   `2,4'-DDT_tissue_Comment`,
+                                   `4,4'-DDT_tissue_Comment`,
+                                   `2,3,7,8-TCDD_tissue_Comment`,
+                                   `PBDE-47_tissue_Comment`,
+                                   `PBDE-85_tissue_Comment`))
+
+## wide format of plasma chemicals
+R21_other_plasma_wide <- R21_other_plasma %>% 
+                         pivot_wider(
+                            names_from=visit,
+                            values_from = c(pcb_153_plasma,	pcb_138_plasma,	pcb_118_plasma,	dde_4_4_plasma, ddt_2_4_plasma, HCB_plasma, pcb_153_plasma_Comment,	pcb_138_plasma_Comment,	pcb_118_plasma_Comment,	dde_4_4_plasma_Comment, ddt_2_4_plasma_Comment, HCB_plasma_Comment,height_m,	Weight_kg, bmi,	reg_pfat,	tot_lean_kg,	tot_fat_kg,	tot_lean_index,	tot_fat_index,	vis_fat_mass_kg, glucose, insulin,	Baseline_HOMA_IR_NEW,	AIRg,	DI,	SI, Chol_mgdl, TG_mgdl, HDL_mgdl, LDL_mgdl),
+                         names_sep = ".")
+
+R21_tissue_wide<- R21_tissue %>% 
+                  select(ID, AT_Type, HCB_tissue,	dde_2_4_tissue,	dde_4_4_tissue,	pcb_118_tissue,	ddt_2_4_tissue,	pcb_153_tissue,	ddt_4_4_tissue,	tcdd_2_3_7_8_tissue, pbde_47_tissue,	pbde_85_tissue, HCB_tissue_Comment,	dde_2_4_tissue_Comment,	dde_4_4_tissue_Comment,	pcb_118_tissue_Comment,	ddt_2_4_tissue_Comment,	pcb_153_tissue_Comment,	ddt_4_4_tissue_Comment,	tcdd_2_3_7_8_tissue_Comment, pbde_47_tissue_Comment,	pbde_85_tissue_Comment) %>% 
+                  pivot_wider(
+                         names_from=AT_Type,
+                         values_from = c(HCB_tissue,	dde_2_4_tissue,	dde_4_4_tissue,	pcb_118_tissue,	ddt_2_4_tissue,	pcb_153_tissue,	ddt_4_4_tissue,	tcdd_2_3_7_8_tissue, pbde_47_tissue,	pbde_85_tissue, HCB_tissue_Comment,	dde_2_4_tissue_Comment,	dde_4_4_tissue_Comment,	pcb_118_tissue_Comment,	ddt_2_4_tissue_Comment,	pcb_153_tissue_Comment,	ddt_4_4_tissue_Comment,	tcdd_2_3_7_8_tissue_Comment, pbde_47_tissue_Comment,	pbde_85_tissue_Comment),
+                         names_sep = ".") 
+
+whole<- R21_other_plasma_wide %>% 
+        full_join(R21_tissue_wide, by="ID")
+
+## assign indicator for tissue
+whole$tissue_ind<- ifelse(is.na(whole$HCB_tissue.VAT)==TRUE, 0, 1)
+
+## assign indicator for plasma
+whole$plasma_ind<- ifelse(is.na(whole$HCB_plasma.Baseline)==TRUE, 0, 1)
+
+## Export
+write_xlsx(whole, "~/Projects/Emory R21 Study/output/wide_format/whole_wide.xlsx")
+
+```
+
+
